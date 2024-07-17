@@ -2,6 +2,89 @@
 #include <vector>
 #include <curand.h>
 #include <curand_kernel.h>
+#include <set>
+#include <random>
+#include <type_traits>
+
+
+template <typename T>
+struct is_vector : std::false_type {};
+
+template <typename T, typename A>
+struct is_vector<std::vector<T, A>> : std::true_type {};
+
+// Function to transpose a vector
+template <typename T>
+typename std::enable_if<!is_vector<typename T::value_type>::value, std::vector<std::vector<typename T::value_type>>>::type
+transpose(const T& container) {
+    std::vector<std::vector<typename T::value_type>> result(container.size(), std::vector<typename T::value_type>(1));
+    for (size_t i = 0; i < container.size(); ++i) {
+        result[i][0] = container[i];
+    }
+    return result;
+}
+
+// Function to transpose a matrix
+template <typename T>
+typename std::enable_if<is_vector<typename T::value_type>::value, std::vector<std::vector<typename T::value_type::value_type>>>::type
+transpose(const T& container) {
+    if (container.empty()) return {};
+
+    size_t rows = container.size();
+    size_t cols = container[0].size();
+    std::vector<std::vector<typename T::value_type::value_type>> result(cols, std::vector<typename T::value_type::value_type>(rows));
+    
+    for (size_t i = 0; i < rows; ++i) {
+        for (size_t j = 0; j < cols; ++j) {
+            result[j][i] = container[i][j];
+        }
+    }
+    
+    return result;
+}
+
+
+// Function to get the dimension of a vector
+template <typename T>
+typename std::enable_if<!is_vector<typename T::value_type>::value, std::pair<int, int>>::type
+getDimension(const T& container) {
+    return {static_cast<int>(container.size()), 1}; // Return size and 1 (indicating it's a vector)
+}
+
+// Function to get the dimension of a matrix
+template <typename T>
+typename std::enable_if<is_vector<typename T::value_type>::value, std::pair<int, int>>::type
+getDimension(const T& container) {
+    int rows = static_cast<int>(container.size());
+    int cols = rows > 0 ? static_cast<int>(container[0].size()) : 0; // If there are rows, get the column size from the first row
+    return {rows, cols}; // Return number of rows and columns
+}
+
+std::vector<int> getDifference(const std::vector<int>& vec1, int n) {
+    std::set<int> excludeSet(vec1.begin(), vec1.end());
+    std::vector<int> result;
+    
+    for (int i = 0; i < n; ++i) {
+        if (excludeSet.find(i) == excludeSet.end()) {
+            result.push_back(i);
+        }
+    }
+    
+    return result;
+}
+std::vector<int> generateRandomBinaryVector(int n) {
+    std::vector<int> result(n);
+    std::random_device rd;  // Random number generator device
+    std::mt19937 gen(rd()); // Mersenne Twister random number generator
+    std::uniform_int_distribution<> dis(0, 1); // Distribution for 0 and 1
+
+    for (int i = 0; i < n; ++i) {
+        result[i] = dis(gen);
+    }
+    
+    return result;
+}
+
 
 __global__ void generateRandomMatrixKernel(int* matrix, int n, int m, int r1, int r2, unsigned long seed) {
     int idx = blockIdx.x * blockDim.x + threadIdx.x;
@@ -136,6 +219,7 @@ void printMatrix(const std::vector<std::vector<int>>& matrix) {
         std::cout << std::endl;
     }
 }
+
 
 int main() {
     int n = 10, m = 15, r1 = 0, r2 = 50;
@@ -296,6 +380,28 @@ int main() {
     } else {
         std::cout << "The result matrix is not invertible." << std::endl;
     }
+
+
+    std::vector<int> result = getDifference(rows2, n);
+    
+    std::vector<int> randomVector = generateRandomBinaryVector(n);
+
+    std::vector<int> vec = {1, 2, 3, 4, 5};
+    std::vector<std::vector<int>> mat = {
+        {1, 2, 3},
+        {4, 5, 6},
+        {7, 8, 9}
+    };
+    
+    auto vecDim = getDimension(vec);
+    auto matDim = getDimension(mat);
+    
+    auto transposedVec = transpose(vec);
+    auto transposedMat = transpose(mat);
+
+    
+
+    
 
     // Free memory
     delete[] h_flat_matrix;
