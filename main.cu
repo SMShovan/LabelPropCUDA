@@ -5,7 +5,7 @@
 #include <set>
 #include <random>
 #include <type_traits>
-
+using namespace std;
 
 template <typename T>
 struct is_vector : std::false_type {};
@@ -250,139 +250,71 @@ int main() {
     std::cout << "Generated Matrix:" << std::endl;
     printMatrix(h_matrix);
 
-    // Define the first submatrix row and column indices
-    std::vector<int> rows1 = {1, 3, 5};
-    std::vector<int> cols1 = {2, 4, 6};
-    int sub_n1 = rows1.size();
-    int sub_m1 = cols1.size();
-    int sub_total_elements1 = sub_n1 * sub_m1;
+    
 
-    // Allocate host memory for the first submatrix
-    std::vector<std::vector<int>> h_submatrix1(sub_n1, std::vector<int>(sub_m1));
-    int* h_flat_submatrix1 = new int[sub_total_elements1];
+    // // Allocate host memory for the result submatrix
+    // std::vector<std::vector<int>> h_result(sub_n1, std::vector<int>(sub_m2));
+    // int* h_flat_result = new int[sub_n1 * sub_m2];
 
-    // Allocate device memory for the first submatrix
-    int* d_submatrix1;
-    cudaMalloc(&d_submatrix1, sub_total_elements1 * sizeof(int));
+    // // Allocate device memory for the result submatrix
+    // int* d_result;
+    // cudaMalloc(&d_result, sub_n1 * sub_m2 * sizeof(int));
 
-    // Fetch the first submatrix on the GPU
-    fetchSubMatrix(d_matrix, d_submatrix1, rows1, cols1, sub_n1, sub_m1, n, m);
+    // // Perform matrix multiplication on the GPU
+    // parallelMatrixMult(d_submatrix1, d_submatrix2, d_result, sub_n1, sub_m1, sub_m2);
 
-    // Copy the first submatrix back to host
-    cudaMemcpy(h_flat_submatrix1, d_submatrix1, sub_total_elements1 * sizeof(int), cudaMemcpyDeviceToHost);
+    // // Copy the result submatrix back to host
+    // cudaMemcpy(h_flat_result, d_result, sub_n1 * sub_m2 * sizeof(int), cudaMemcpyDeviceToHost);
 
-    // Convert flat submatrix to 2D vector for printing
-    for (int i = 0; i < sub_n1; ++i) {
-        for (int j = 0; j < sub_m1; ++j) {
-            h_submatrix1[i][j] = h_flat_submatrix1[i * sub_m1 + j];
-        }
-    }
+    // // Convert flat result submatrix to 2D vector for printing
+    // for (int i = 0; i < sub_n1; ++i) {
+    //     for (int j = 0; j < sub_m2; ++j) {
+    //         h_result[i][j] = h_flat_result[i * sub_m2 + j];
+    //     }
+    // }
 
-    // Print the first fetched submatrix
-    std::cout << "First Fetched Submatrix:" << std::endl;
-    printMatrix(h_submatrix1);
+    // // Print the result submatrix
+    // std::cout << "Result of Submatrix Multiplication:" << std::endl;
+    // printMatrix(h_result);
 
-    // Define the second submatrix row and column indices
-    std::vector<int> rows2 = {0, 2, 4};
-    std::vector<int> cols2 = {1, 3, 5};
-    int sub_n2 = rows2.size();
-    int sub_m2 = cols2.size();
-    int sub_total_elements2 = sub_n2 * sub_m2;
+    // // Check if the result matrix is invertible
+    // if (isInvertible(d_result, sub_n1)) {
+    //     std::cout << "The result matrix is invertible." << std::endl;
 
-    // Allocate host memory for the second submatrix
-    std::vector<std::vector<int>> h_submatrix2(sub_n2, std::vector<int>(sub_m2));
-    int* h_flat_submatrix2 = new int[sub_total_elements2];
+    //     // Allocate device memory for the inverted matrix
+    //     int* d_inv_result;
+    //     cudaMalloc(&d_inv_result, sub_n1 * sub_m2 * sizeof(int));
 
-    // Allocate device memory for the second submatrix
-    int* d_submatrix2;
-    cudaMalloc(&d_submatrix2, sub_total_elements2 * sizeof(int));
+    //     // Invert the result matrix on the GPU
+    //     invertMatrix(d_result, d_inv_result, sub_n1);
 
-    // Fetch the second submatrix on the GPU
-    fetchSubMatrix(d_matrix, d_submatrix2, rows2, cols2, sub_n2, sub_m2, n, m);
+    //     // Allocate host memory for the inverted matrix
+    //     int* h_flat_inv_result = new int[sub_n1 * sub_m2];
+    //     std::vector<std::vector<int>> h_inv_result(sub_n1, std::vector<int>(sub_m2));
 
-    // Copy the second submatrix back to host
-    cudaMemcpy(h_flat_submatrix2, d_submatrix2, sub_total_elements2 * sizeof(int), cudaMemcpyDeviceToHost);
+    //     // Copy the inverted matrix back to host
+    //     cudaMemcpy(h_flat_inv_result, d_inv_result, sub_n1 * sub_m2 * sizeof(int), cudaMemcpyDeviceToHost);
 
-    // Convert flat submatrix to 2D vector for printing
-    for (int i = 0; i < sub_n2; ++i) {
-        for (int j = 0; j < sub_m2; ++j) {
-            h_submatrix2[i][j] = h_flat_submatrix2[i * sub_m2 + j];
-        }
-    }
+    //     // Convert flat inverted matrix to 2D vector for printing
+    //     for (int i = 0; i < sub_n1; ++i) {
+    //         for (int j = 0; j < sub_m2; ++j) {
+    //             h_inv_result[i][j] = h_flat_inv_result[i * sub_m2 + j];
+    //         }
+    //     }
 
-    // Print the second fetched submatrix
-    std::cout << "Second Fetched Submatrix:" << std::endl;
-    printMatrix(h_submatrix2);
+    //     // Print the inverted matrix
+    //     std::cout << "Inverted Result Matrix:" << std::endl;
+    //     printMatrix(h_inv_result);
 
-    // Ensure the number of columns in the first submatrix equals the number of rows in the second submatrix
-    if (sub_m1 != sub_n2) {
-        std::cerr << "Error: Submatrix dimensions do not allow multiplication." << std::endl;
-        return -1;
-    }
-
-    // Allocate host memory for the result submatrix
-    std::vector<std::vector<int>> h_result(sub_n1, std::vector<int>(sub_m2));
-    int* h_flat_result = new int[sub_n1 * sub_m2];
-
-    // Allocate device memory for the result submatrix
-    int* d_result;
-    cudaMalloc(&d_result, sub_n1 * sub_m2 * sizeof(int));
-
-    // Perform matrix multiplication on the GPU
-    parallelMatrixMult(d_submatrix1, d_submatrix2, d_result, sub_n1, sub_m1, sub_m2);
-
-    // Copy the result submatrix back to host
-    cudaMemcpy(h_flat_result, d_result, sub_n1 * sub_m2 * sizeof(int), cudaMemcpyDeviceToHost);
-
-    // Convert flat result submatrix to 2D vector for printing
-    for (int i = 0; i < sub_n1; ++i) {
-        for (int j = 0; j < sub_m2; ++j) {
-            h_result[i][j] = h_flat_result[i * sub_m2 + j];
-        }
-    }
-
-    // Print the result submatrix
-    std::cout << "Result of Submatrix Multiplication:" << std::endl;
-    printMatrix(h_result);
-
-    // Check if the result matrix is invertible
-    if (isInvertible(d_result, sub_n1)) {
-        std::cout << "The result matrix is invertible." << std::endl;
-
-        // Allocate device memory for the inverted matrix
-        int* d_inv_result;
-        cudaMalloc(&d_inv_result, sub_n1 * sub_m2 * sizeof(int));
-
-        // Invert the result matrix on the GPU
-        invertMatrix(d_result, d_inv_result, sub_n1);
-
-        // Allocate host memory for the inverted matrix
-        int* h_flat_inv_result = new int[sub_n1 * sub_m2];
-        std::vector<std::vector<int>> h_inv_result(sub_n1, std::vector<int>(sub_m2));
-
-        // Copy the inverted matrix back to host
-        cudaMemcpy(h_flat_inv_result, d_inv_result, sub_n1 * sub_m2 * sizeof(int), cudaMemcpyDeviceToHost);
-
-        // Convert flat inverted matrix to 2D vector for printing
-        for (int i = 0; i < sub_n1; ++i) {
-            for (int j = 0; j < sub_m2; ++j) {
-                h_inv_result[i][j] = h_flat_inv_result[i * sub_m2 + j];
-            }
-        }
-
-        // Print the inverted matrix
-        std::cout << "Inverted Result Matrix:" << std::endl;
-        printMatrix(h_inv_result);
-
-        // Free memory for the inverted matrix
-        delete[] h_flat_inv_result;
-        cudaFree(d_inv_result);
-    } else {
-        std::cout << "The result matrix is not invertible." << std::endl;
-    }
+    //     // Free memory for the inverted matrix
+    //     delete[] h_flat_inv_result;
+    //     cudaFree(d_inv_result);
+    // } else {
+    //     std::cout << "The result matrix is not invertible." << std::endl;
+    // }
 
 
-    std::vector<int> result = getDifference(rows2, n);
+    //std::vector<int> result = getDifference(rows2, n);
     
     std::vector<int> randomVector = generateRandomBinaryVector(n);
 
@@ -399,19 +331,186 @@ int main() {
     auto transposedVec = transpose(vec);
     auto transposedMat = transpose(mat);
 
+    cout<< "******************************* Testing Done *******************************"<<endl;
+
+    std::vector<int> u = {3, 5, 8};
+    std::vector<int> l = getDifference(u, n);
+
+
+    std::cout << "dim of u :" << getDimension(u).first << " X "<< getDimension(u).second<< endl;
+    std::cout << "dim of l :" << getDimension(l).first << " X "<< getDimension(l).second<< endl;
     
 
+    // Define the first submatrix row and column indices
+    
+    int sub_n1 = u.size();
+    int sub_m1 = l.size();
+    int sub_total_elements1 = sub_n1 * sub_m1;
+
+    // Allocate host memory for the first submatrix
+    std::vector<std::vector<int>> h_submatrix1(sub_n1, std::vector<int>(sub_m1));
+    int* h_flat_submatrix1 = new int[sub_total_elements1];
+
+    // Allocate device memory for the first submatrix
+    int* d_submatrix1;
+    cudaMalloc(&d_submatrix1, sub_total_elements1 * sizeof(int));
+
+    // Fetch the first submatrix on the GPU
+    fetchSubMatrix(d_matrix, d_submatrix1, u, l, sub_n1, sub_m1, n, m);
+
+    // Copy the first submatrix back to host
+    cudaMemcpy(h_flat_submatrix1, d_submatrix1, sub_total_elements1 * sizeof(int), cudaMemcpyDeviceToHost);
+
+    // Convert flat submatrix to 2D vector for printing
+    for (int i = 0; i < sub_n1; ++i) {
+        for (int j = 0; j < sub_m1; ++j) {
+            h_submatrix1[i][j] = h_flat_submatrix1[i * sub_m1 + j];
+        }
+    }
+
+
+    std::cout << "dim of ul :" << getDimension(h_submatrix1).first << " X "<< getDimension(h_submatrix1).second<< endl;
+
+    int sub_n2 = u.size();
+    int sub_m2 = u.size();
+    int sub_total_elements2 = sub_n2 * sub_m2;
+
+    // Allocate host memory for the first submatrix
+    std::vector<std::vector<int>> h_submatrix2(sub_n2, std::vector<int>(sub_m2));
+    int* h_flat_submatrix2 = new int[sub_total_elements2];
+
+    // Allocate device memory for the first submatrix
+    int* d_submatrix2;
+    cudaMalloc(&d_submatrix2, sub_total_elements2 * sizeof(int));
+
+    // Fetch the first submatrix on the GPU
+    fetchSubMatrix(d_matrix, d_submatrix2, u, u, sub_n2, sub_m2, n, m);
+
+    // Copy the first submatrix back to host
+    cudaMemcpy(h_flat_submatrix2, d_submatrix2, sub_total_elements2 * sizeof(int), cudaMemcpyDeviceToHost);
+
+    // Convert flat submatrix to 2D vector for printing
+    for (int i = 0; i < sub_n2; ++i) {
+        for (int j = 0; j < sub_m2; ++j) {
+            h_submatrix2[i][j] = h_flat_submatrix2[i * sub_m2 + j];
+        }
+    }
+
+
+    std::cout << "dim of uu :" << getDimension(h_submatrix2).first << " X "<< getDimension(h_submatrix2).second<< endl;
+
+    int inv_n2 = getDimension(h_submatrix2).first;
+    int inv_m2 = getDimension(h_submatrix2).second;
+    int* d_inv_submatrix2;
+    std::vector<std::vector<int>> h_inv_submatrix2(inv_n2, std::vector<int>(inv_m2));
+    // // Check if the result matrix is invertible
+    if (isInvertible(d_submatrix2, getDimension(h_submatrix2).first)) {
+        std::cout << "The result matrix is invertible." << std::endl;
+    
+        // Allocate device memory for the inverted matrix
+        
+        cudaMalloc(&d_inv_submatrix2, inv_n2 * inv_m2 * sizeof(int));
+
+        // Invert the result matrix on the GPU
+        invertMatrix(d_submatrix2, d_inv_submatrix2, inv_n2);
+
+        // Allocate host memory for the inverted matrix
+        int* h_flat_inv_submatrix2 = new int[inv_n2 * inv_m2];
+        
+
+        // Copy the inverted matrix back to host
+        cudaMemcpy(h_flat_inv_submatrix2, d_inv_submatrix2, inv_n2 * inv_m2 * sizeof(int), cudaMemcpyDeviceToHost);
+
+        // Convert flat inverted matrix to 2D vector for printing
+        for (int i = 0; i < inv_n2; ++i) {
+            for (int j = 0; j < inv_m2; ++j) {
+                h_inv_submatrix2[i][j] = h_flat_inv_submatrix2[i * inv_m2 + j];
+            }
+        }
+
+        // // Print the inverted matrix
+        // std::cout << "Inverted Result Matrix:" << std::endl;
+        // printMatrix(h_inv_submatrix2);
+
+    } else {
+        std::cout << "The result matrix is not invertible." << std::endl;
+    }
+
+    std::cout << "dim of inv_uu :" << getDimension(h_inv_submatrix2).first << " X "<< getDimension(h_inv_submatrix2).second<< endl;
+
+
+    // Allocate host memory for the result submatrix
+    std::vector<std::vector<int>> h_result(sub_n2, std::vector<int>(sub_m1 ));
+    int* h_flat_result = new int[sub_m1 * sub_n2];
+
+    // Allocate device memory for the result submatrix
+    int* d_result;
+    cudaMalloc(&d_result, sub_m1 * sub_n2 * sizeof(int));
+
+    // Perform matrix multiplication on the GPU
+    parallelMatrixMult(d_inv_submatrix2, d_submatrix1, d_result, sub_n2, sub_n1, sub_m1);
+
+    // Copy the result submatrix back to host
+    cudaMemcpy(h_flat_result, d_result, sub_m1 * sub_n2 * sizeof(int), cudaMemcpyDeviceToHost);
+
+    // Convert flat result submatrix to 2D vector for printing
+    for (int i = 0; i < sub_n2; ++i) {
+        for (int j = 0; j < sub_m1; ++j) {
+            h_result[i][j] = h_flat_result[i * sub_m1 + j];
+        }
+    }
+
+    std::cout << "dim of result :" << getDimension(h_result).first << " X "<< getDimension(h_result).second<< endl;
+
+
+    // Allocate host memory for the result submatrix
+    int res_n = getDimension(h_result).first;
+    int res_m = getDimension(h_result).second;
+    int vec_n = getDimension(l).first;
+    int vec_m = getDimension(l).second;
+
+    std::vector<std::vector<int>> h_result2(res_n, std::vector<int>(vec_m ));
+    int* h_flat_result2 = new int[vec_m * res_n];
+
+    // Allocate device memory for the result submatrix
+    int* d_result2;
+    int * d_vec;
+    cudaMalloc(&d_vec, vec_m * vec_n * sizeof(int));
+    cudaMemcpy(d_vec, l.data(), vec_m * vec_n * sizeof(int), cudaMemcpyHostToDevice);
+    cudaMalloc(&d_result2, vec_m * res_n * sizeof(int));
     
 
-    // Free memory
-    delete[] h_flat_matrix;
-    delete[] h_flat_submatrix1;
-    delete[] h_flat_submatrix2;
-    delete[] h_flat_result;
-    cudaFree(d_matrix);
-    cudaFree(d_submatrix1);
-    cudaFree(d_submatrix2);
-    cudaFree(d_result);
+    // Perform matrix multiplication on the GPU
+    parallelMatrixMult(d_result, d_vec, d_result2, res_n, res_m, vec_m);
+
+    // Copy the result submatrix back to host
+    cudaMemcpy(h_flat_result2, d_result2, vec_m * res_n * sizeof(int), cudaMemcpyDeviceToHost);
+
+    // Convert flat result submatrix to 2D vector for printing
+    for (int i = 0; i < res_n; ++i) {
+        for (int j = 0; j < vec_m; ++j) {
+            h_result2[i][j] = h_flat_result2[i * vec_m + j];
+        }
+    }
+
+    std::cout << "dim of final result :" << getDimension(h_result2).first << " X "<< getDimension(h_result2).second<< endl;
+
+    std::cout << "Final result u:" << std::endl;
+    for (const auto& row : h_result2) {
+        for (int val : row) {
+            std::cout << val << " ";
+        }
+        std::cout << std::endl;
+    }
+    // // Free memory
+    // delete[] h_flat_matrix;
+    // delete[] h_flat_submatrix1;
+    // delete[] h_flat_submatrix2;
+    // delete[] h_flat_result;
+    // cudaFree(d_matrix);
+    // cudaFree(d_submatrix1);
+    // cudaFree(d_submatrix2);
+    // cudaFree(d_result);
 
     return 0;
 }
