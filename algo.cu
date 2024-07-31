@@ -5,6 +5,7 @@
 #include <cstdlib>
 #include <ctime>
 #include <set>
+#include <map>
 
 using namespace std;
 
@@ -182,12 +183,67 @@ vector<vector<int>> findConnectedComponent(const vector<vector<int>>& graph) {
     return components;
 }
 
+vector<vector<int>> upperTriangularWithDiagonal(const vector<vector<int>>& matrix) {
+    vector<vector<int>> upperMatrix = matrix;
+    for (int i = 0; i < matrix.size(); ++i) {
+        for (int j = 0; j < i; ++j) {
+            upperMatrix[i][j] = 0;
+        }
+    }
+    return upperMatrix;
+}
+
+void labelToClass(const vector<pair<int, int>>& readLabeledNodes, vector<int>& class0, vector<int>& class1) {
+    for (const auto& node : readLabeledNodes) {
+        if (node.second == 0) {
+            class0.push_back(node.first);
+        } else if (node.second == 1) {
+            class1.push_back(node.first);
+        }
+    }
+}
+
+class ComponentProperties {
+public:
+    vector<int> nodes;
+    int index;
+    int class0Sum;
+    int class1Sum;
+    int total;
+
+    ComponentProperties() : index(0), class0Sum(0), class1Sum(0), total(0) {}
+};
+
+void parallelEdgeComponent(const vector<vector<int>>& readUpperSubSparseGraph, const vector<vector<int>>& connectedComponents, const vector<int>& class0, const vector<int>& class1, vector<ComponentProperties>& componentsProperties) {
+    map<int, int> componentMap;
+    for (int i = 0; i < connectedComponents.size(); ++i) {
+        for (const auto& node : connectedComponents[i]) {
+            componentMap[node] = i;
+        }
+    }
+
+    for (int i = 0; i < connectedComponents.size(); ++i) {
+        ComponentProperties cp;
+        cp.index = i;
+        cp.nodes = connectedComponents[i];
+        for (const auto& node : connectedComponents[i]) {
+            for (const auto& target : class0) {
+                cp.class0Sum += readUpperSubSparseGraph[node][target];
+            }
+            for (const auto& target : class1) {
+                cp.class1Sum += readUpperSubSparseGraph[node][target];
+            }
+        }
+        cp.total = cp.class0Sum + cp.class1Sum;
+        componentsProperties.push_back(cp);
+    }
+}
 
 int main() {
     int nNodes = 15;
     int sRand = 1;
     int eRand = 10;
-    int threshold = 5;
+    int threshold = 8;
     double percentage = 40.0; 
     
     vector<vector<int>> graph = generateGraph(nNodes, sRand, eRand);
@@ -228,13 +284,52 @@ int main() {
     vector<vector<int>> readSubSparseGraph = readGraphFromFile("unlabeledSubSparseGraph.txt");
     printGraph(readSubSparseGraph);
 
-    vector<vector<int>> connectedComponents = findConnectedComponent(readSubSparseGraph);
+    vector<vector<int>> upperSubSparseGraph = upperTriangularWithDiagonal(readSubSparseGraph);
+    saveGraphToFile(upperSubSparseGraph, "upperSubSparseGraph.txt");
+
+    vector<vector<int>> readUpperSubSparseGraph = readGraphFromFile("upperSubSparseGraph.txt");
+    cout << "Upper Triangular Sub Sparse Graph" << endl;
+    printGraph(readUpperSubSparseGraph);
+
+    vector<vector<int>> connectedComponents = findConnectedComponent(readUpperSubSparseGraph);
     cout << "Number of connected components: " << connectedComponents.size() << "\n";
-    for (const auto& component : connectedComponents) {
+    for ( auto& component : connectedComponents) {
         cout << "Component: ";
-        for (const auto& node : component) {
+        for ( auto& node : component) {
+            // cout << readUnlabeledNodes[node].first << " ";
+            node = readUnlabeledNodes[node].first;
             cout << node << " ";
         }
+        cout << "\n";
+    }
+
+    vector<int> class0, class1;
+    labelToClass(readLabeledNodes, class0, class1);
+    cout << "Class 0 Nodes: ";
+    for (const auto& node : class0) {
+        cout << node << " ";
+    }
+    cout << "\n";
+
+    cout << "Class 1 Nodes: ";
+    for (const auto& node : class1) {
+        cout << node << " ";
+    }
+    cout << "\n";
+
+    cout << "Original Graph" <<"\n";
+    printGraph(upperTriangularWithDiagonal(readGraph));
+
+    vector<ComponentProperties> componentsProperties;
+    parallelEdgeComponent(upperTriangularWithDiagonal(readGraph), connectedComponents, class0, class1, componentsProperties);
+    for (const auto& cp : componentsProperties) {
+        cout << "Component " << cp.index << ": Nodes = ";
+        for (const auto& node : cp.nodes) {
+            cout << node << " ";
+        }
+        cout << ", Class 0 Sum = " << cp.class0Sum;
+        cout << ", Class 1 Sum = " << cp.class1Sum;
+        cout << ", Total = " << cp.total;
         cout << "\n";
     }
 
