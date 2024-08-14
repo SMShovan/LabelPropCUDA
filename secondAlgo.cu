@@ -203,58 +203,53 @@ void labelToClass(const vector<pair<int, int>>& readLabeledNodes, vector<int>& c
     }
 }
 
-class ComponentProperties {
-public:
-    vector<int> nodes;
-    int index;
-    int class0Sum;
-    int class1Sum;
-    int total;
-
-    ComponentProperties() : index(0), class0Sum(0), class1Sum(0), total(0) {}
-};
-
-void parallelEdgeComponent(const vector<vector<int>>& readUpperSubSparseGraph, const vector<vector<int>>& connectedComponents, const vector<int>& class0, const vector<int>& class1, vector<ComponentProperties>& componentsProperties) {
-    map<int, int> componentMap;
-    for (int i = 0; i < connectedComponents.size(); ++i) {
-        for (const auto& node : connectedComponents[i]) {
-            componentMap[node] = i;
+void labelToClass(const vector<pair<int, int>>& readUnlabeledNodes, vector<int>& classU) {
+    for (const auto& node : readUnlabeledNodes) {
+        if (node.second == -1) {
+            classU.push_back(node.first);
         }
-    }
-
-    for (int i = 0; i < connectedComponents.size(); ++i) {
-        ComponentProperties cp;
-        cp.index = i;
-        cp.nodes = connectedComponents[i];
-        for (const auto& node : connectedComponents[i]) {
-            for (const auto& target : class0) {
-                cp.class0Sum += readUpperSubSparseGraph[node][target];
-            }
-            for (const auto& target : class1) {
-                cp.class1Sum += readUpperSubSparseGraph[node][target];
-            }
-        }
-        cp.total = cp.class0Sum + cp.class1Sum;
-        componentsProperties.push_back(cp);
     }
 }
+
+class unlabelledNodeProperties {
+public:
+    int node;
+    int class0Sum;
+    int class1Sum;
+    int classUSum;
+    int total;
+    float prevLabel;
+    float curLabel;
+
+    unlabelledNodeProperties() : node(-1), class0Sum(0), class1Sum(0), classUSum(0), prevLabel(-1.0), curLabel(0.5), total(0) {}
+};
+
+
+
 
 void parallelEdgeUnlabeled(const vector<vector<int>>& readUpperSubSparseGraph, 
                            const vector<int>& readUnlabeledNodesFirst, 
                            const vector<int>& class0, 
-                           const vector<int>& class1) {
+                           const vector<int>& class1,
+                           const vector<int>& classU, 
+                           vector<unlabelledNodeProperties>& unlabellednodeProperties) {
     for (const auto& node : readUnlabeledNodesFirst) {
-        int class0Sum = 0, class1Sum = 0;
+        unlabelledNodeProperties cp;
+        cp.node = node;
         for (const auto& target : class0) {
-            class0Sum += readUpperSubSparseGraph[node][target];
+            cp.class0Sum += readUpperSubSparseGraph[node][target];
         }
         for (const auto& target : class1) {
-            class1Sum += readUpperSubSparseGraph[node][target];
+            cp.class1Sum += readUpperSubSparseGraph[node][target];
         }
-        int total = class0Sum + class1Sum;
-        cout << "Node " << node << ": Class 0 Sum = " << class0Sum << ", Class 1 Sum = " << class1Sum << ", Total = " << total << "\n";
+        for (const auto& target : classU) {
+            cp.classUSum += readUpperSubSparseGraph[node][target];
+        }
+        cp.total = cp.class0Sum + cp.class1Sum + cp.classUSum;
+        unlabellednodeProperties.push_back(cp);
     }
 }
+
 
 
 int main() {
@@ -321,8 +316,9 @@ int main() {
     //     cout << "\n";
     // }
 
-    vector<int> class0, class1;
+    vector<int> class0, class1, classU;
     labelToClass(readLabeledNodes, class0, class1);
+    labelToClass(readUnlabeledNodes, classU);
     cout << "Class 0 Nodes: ";
     for (const auto& node : class0) {
         cout << node << " ";
@@ -335,12 +331,18 @@ int main() {
     }
     cout << "\n";
 
+    cout << "Class Unlabelled Nodes: ";
+    for (const auto& node : classU) {
+        cout << node << " ";
+    }
+    cout << "\n";
+
     cout << "Original Graph" <<"\n";
     printGraph(upperTriangularWithDiagonal(readGraph));
 
-    // vector<ComponentProperties> componentsProperties;
-    // parallelEdgeComponent(upperTriangularWithDiagonal(readGraph), connectedComponents, class0, class1, componentsProperties);
-    // for (const auto& cp : componentsProperties) {
+    // vector<unlabelledNodeProperties> unlabellednodeProperties;
+    // parallelEdgeComponent(upperTriangularWithDiagonal(readGraph), connectedComponents, class0, class1, unlabellednodeProperties);
+    // for (const auto& cp : unlabellednodeProperties) {
     //     cout << "Component " << cp.index << ": Nodes = ";
     //     for (const auto& node : cp.nodes) {
     //         cout << node << " ";
@@ -356,8 +358,48 @@ int main() {
         readUnlabeledNodesFirst.push_back(node.first);
     }
 
-    // New parallelEdgeUnlabeled function call
-    parallelEdgeUnlabeled(upperTriangularWithDiagonal(readGraph), readUnlabeledNodesFirst, class0, class1);
+    vector<unlabelledNodeProperties> unlabellednodeProperties;
 
+    // Call the updated function
+    parallelEdgeUnlabeled(upperTriangularWithDiagonal(readGraph), readUnlabeledNodesFirst, class0, class1, classU, unlabellednodeProperties);
+    vector<pair<int, int>> resultUnlabeledNodes(nNodes);
+    int idx = 0; 
+    // Print the results from main
+    for (int i = 0; i < 10; i++)
+        for ( auto& cp : unlabellednodeProperties) {
+            
+            if (cp.total == 0)
+                continue;
+
+            float unContribute = 0;
+            for (int u = 0; u < classU.size(); u++)
+            {
+                for ( auto& un : unlabellednodeProperties)
+                {
+                    if (un.node == classU[u])
+                    {
+                        unContribute+= (un.curLabel - cp.curLabel) * 1.0 * upperTriangularWithDiagonal(readGraph)[cp.node][un.node]/cp.total; 
+                    }
+                }
+            }
+
+            cp.curLabel = (cp.curLabel + (0 - cp.curLabel)*1.0*cp.class0Sum/cp.total/2 + (1 - cp.curLabel)*1.0*cp.class1Sum/cp.total/2 + unContribute/2);
+            
+            
+            
+            if (i == 9)
+            {
+                cout << "Node " << cp.node << ": Class 0 Sum = " << cp.class0Sum 
+                << ", Class 1 Sum = " << cp.class1Sum 
+                << ", Total = " << cp.total 
+                << ", Label = " << ((cp.curLabel >= 0.5)? 1 : 0)
+                << "\n";
+                resultUnlabeledNodes[idx] = make_pair(cp.node, (cp.curLabel >= 0.5)? 1 : 0);
+                idx++;
+            }
+            
+        }
+        
+    
     return 0;
 }
