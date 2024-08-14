@@ -210,8 +210,9 @@ public:
     int class0Sum;
     int class1Sum;
     int total;
+    float label;
 
-    ComponentProperties() : index(0), class0Sum(0), class1Sum(0), total(0) {}
+    ComponentProperties() : index(0), class0Sum(0), class1Sum(0), total(0), label(0.5) {}
 };
 
 void parallelEdgeComponent(const vector<vector<int>>& readUpperSubSparseGraph, const vector<vector<int>>& connectedComponents, const vector<int>& class0, const vector<int>& class1, vector<ComponentProperties>& componentsProperties) {
@@ -262,6 +263,7 @@ int main() {
     
     vector<pair<int, int>> labeledNodes;
     vector<pair<int, int>> unlabeledNodes;
+    
     generateLabels(nNodes, percentage, labeledNodes, unlabeledNodes);
     saveLabelsToFile(labeledNodes, "labeledNodes.txt");
     saveLabelsToFile(unlabeledNodes, "unlabeledNodes.txt");
@@ -321,17 +323,27 @@ int main() {
     printGraph(upperTriangularWithDiagonal(readGraph));
 
     vector<ComponentProperties> componentsProperties;
+    vector<pair<int, int>> resultUnlabeledNodes(nNodes);
     parallelEdgeComponent(upperTriangularWithDiagonal(readGraph), connectedComponents, class0, class1, componentsProperties);
-    for (const auto& cp : componentsProperties) {
-        cout << "Component " << cp.index << ": Nodes = ";
-        for (const auto& node : cp.nodes) {
-            cout << node << " ";
+    int resIdx = 0;
+    for (auto& cp : componentsProperties) {
+        //cout << "Component " << cp.index << ": Nodes = ";
+        for (auto& node : cp.nodes) {
+            cout << node << " " << ((cp.label + (0 - cp.label)*1.0*cp.class0Sum/cp.total/2 + (1 - cp.label)*1.0*cp.class1Sum/cp.total/2) >= 0.5)? 1 : 0 ;
+            cout << "\n";
+            
+            resultUnlabeledNodes[resIdx] = make_pair(node, (cp.label + (0 - cp.label)*1.0*cp.class0Sum/cp.total/2 + (1 - cp.label)*1.0*cp.class1Sum/cp.total/2 >= 0.5)? 1 : 0);
+
+            resIdx++;
         }
-        cout << ", Class 0 Sum = " << cp.class0Sum;
-        cout << ", Class 1 Sum = " << cp.class1Sum;
-        cout << ", Total = " << cp.total;
-        cout << "\n";
+        // cout << ", Class 0 Sum = " << cp.class0Sum;
+        // cout << ", Class 1 Sum = " << cp.class1Sum;
+        // cout << ", Total = " << cp.total;
+        // cp.label = cp.label + (0 - cp.label)*1.0*cp.class0Sum/cp.total/2 + (1 - cp.label)*1.0*cp.class1Sum/cp.total/2;
+        // cout << ", Label = " << (cp.label >= 0.5)? 1 : 0;
+        // cout << "\n";
     }
 
-    return 0;
+
+
 }
