@@ -68,6 +68,57 @@ void printGraph(const vector<vector<int>>& graph) {
         cout << "\n";
     }
 }
+__global__ void sparsifyKernel(int* graph, int nNodes, int threshold) {
+    int row = blockIdx.y * blockDim.y + threadIdx.y;
+    int col = blockIdx.x * blockDim.x + threadIdx.x;
+
+    if (row < nNodes && col < nNodes) {
+        int index = row * nNodes + col;
+        if (graph[index] < threshold) {
+            graph[index] = 0;
+        }
+    }
+}
+vector<vector<int>> sparsifyCUDA(vector<vector<int>>& graph, int threshold) {
+    int nNodes = graph.size();
+    
+    // Flatten the graph to 1D array for CUDA
+    vector<int> flatGraph(nNodes * nNodes);
+    for (int i = 0; i < nNodes; ++i) {
+        for (int j = 0; j < nNodes; ++j) {
+            flatGraph[i * nNodes + j] = graph[i][j];
+        }
+    }
+
+    // Allocate memory on GPU
+    int* d_graph;
+    cudaMalloc((void**)&d_graph, nNodes * nNodes * sizeof(int));
+
+    // Copy graph data to GPU
+    cudaMemcpy(d_graph, flatGraph.data(), nNodes * nNodes * sizeof(int), cudaMemcpyHostToDevice);
+
+    // Define block and grid size
+    dim3 blockSize(16, 16);  // Each block has 16x16 threads
+    dim3 gridSize((nNodes + blockSize.x - 1) / blockSize.x, (nNodes + blockSize.y - 1) / blockSize.y);
+
+    // Launch kernel on the GPU
+    sparsifyKernel<<<gridSize, blockSize>>>(d_graph, nNodes, threshold);
+
+    // Copy the result back to CPU
+    cudaMemcpy(flatGraph.data(), d_graph, nNodes * nNodes * sizeof(int), cudaMemcpyDeviceToHost);
+
+    // Reshape flatGraph back to 2D
+    for (int i = 0; i < nNodes; ++i) {
+        for (int j = 0; j < nNodes; ++j) {
+            graph[i][j] = flatGraph[i * nNodes + j];
+        }
+    }
+
+    // Free GPU memory
+    cudaFree(d_graph);
+    return graph;
+}
+
 vector<vector<int>> sparsify(const vector<vector<int>>& graph, int threshold) {
     vector<vector<int>> sparseGraph = graph;
     for (auto& row : sparseGraph) {
@@ -256,7 +307,7 @@ int main() {
 
     cout<<endl;
     cout<<"Sparse Graph"<<endl;
-    vector<vector<int>> sparseGraph = sparsify(readGraph, threshold);
+    vector<vector<int>> sparseGraph = sparsifyCUDA(readGraph, threshold);
     saveGraphToFile(sparseGraph, "sparseGraph.txt");
     printGraph(sparseGraph);
 
