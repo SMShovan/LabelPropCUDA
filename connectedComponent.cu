@@ -42,12 +42,14 @@ vector<vector<int>> computeReachabilityMatrix(const vector<vector<int>>& graph) 
 void removeRedundancy(vector<vector<int>>& reachabilityMatrix) {
     int n = reachabilityMatrix.size(); // Number of nodes
 
+    #pragma omp parallel for
     for (int i = 0; i < n; i++)
         for (int j = n; j > 0; --j) {
             if (reachabilityMatrix[i][j - 1] != 0)
                 reachabilityMatrix[i][j] = 0;
         }
     vector<int> cumCount(n);
+    #pragma omp parallel for
     for(int j = 0; j < n; j++)
     {
         cumCount[j] = 0;
@@ -67,6 +69,7 @@ void removeRedundancy(vector<vector<int>>& reachabilityMatrix) {
     cout<<" Cummulative Sum"<<endl;
     vector<int> partialResult(n);
     int startIdx;
+    #pragma omp parallel for
     for (int j = 0; j < n; j++) {
         if (j != 0 && cumCount[j] - cumCount[j - 1] == 0)
             continue;
