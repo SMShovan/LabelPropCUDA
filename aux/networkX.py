@@ -3,7 +3,7 @@ import networkx as nx  # Importing networkx for graph operations
 
 # Read the edges from graph.txt and treat the graph as undirected
 edges_from_file = []
-with open("tree.txt", "r") as file:
+with open("combinedGraphEL.txt", "r") as file:
     for line in file:
         u, v, w1, w2 = map(int, line.split())
         edges_from_file.append((u, v, [w1, w2]))

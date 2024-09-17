@@ -438,6 +438,7 @@ void convertToEdgeList(const string& inputFile, const string& outputFile) {
             // If the edge hasn't been visited yet, write it to the output file
             if (visitedEdges.find(edge) == visitedEdges.end()) {
                 outFile << node1 << " " << node2 << " " << weight << endl;
+                outFile << node2 << " " << node1 << " " << weight << endl;
                 visitedEdges.insert(edge);
             }
         }
