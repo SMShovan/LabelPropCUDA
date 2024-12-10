@@ -10,17 +10,17 @@
 using namespace std;
 
 vector<vector<int>> generateGraph(int nNodes, int sRand, int eRand) {
-    vector<vector<int>> adjacencyMatrix(nNodes, vector<int>(nNodes));
+    vector<vector<int>> adjacencyMatrix(nNodes, vector<int>(nNodes, 0));
     srand(time(0));
+    
     for (int i = 0; i < nNodes; ++i) {
-        for (int j = 0; j < nNodes; ++j) {
-            if (i == j) {
-                adjacencyMatrix[i][j] = 0; // No self-edges
-            } else {
-                adjacencyMatrix[i][j] = sRand + rand() % (eRand - sRand + 1);
-            }
+        for (int j = i + 1; j < nNodes; ++j) {
+            int weight = sRand + rand() % (eRand - sRand + 1); // Random weight for edge
+            adjacencyMatrix[i][j] = weight; // Set weight for edge (i, j)
+            adjacencyMatrix[j][i] = weight; // Mirror weight for edge (j, i)
         }
     }
+    
     return adjacencyMatrix;
 }
 
@@ -286,10 +286,10 @@ int main() {
     vector<pair<int, int>> readUnlabeledNodes = readLabelsFromFile("unlabeledNodes.txt");
 
     
-    cout<<endl;
-    printLabels(readLabeledNodes, "Labeled"); 
-    cout<<endl;
-    printLabels(readUnlabeledNodes, "Unlabeled");
+    // cout<<endl;
+    // printLabels(readLabeledNodes, "Labeled"); 
+    // cout<<endl;
+    // printLabels(readUnlabeledNodes, "Unlabeled");
 
     // vector<vector<int>> subSparseGraph = unlabeledSubSparseGraph(sparseGraph, readUnlabeledNodes);
     // saveGraphToFile(subSparseGraph, "unlabeledSubSparseGraph.txt");
@@ -319,26 +319,51 @@ int main() {
     vector<int> class0, class1, classU;
     labelToClass(readLabeledNodes, class0, class1);
     labelToClass(readUnlabeledNodes, classU);
+
+    vector<int> c0(nNodes, 0);
+    vector<int> c1(nNodes, 0);
+    vector<int> cA(nNodes, 0);
+
     cout << "Class 0 Nodes: ";
     for (const auto& node : class0) {
-        cout << node << " ";
+        c0[node] = 1;  
     }
+    for(int i = 0; i < nNodes; i++)
+    {
+        cout << c0[i] << " ";
+    }
+    cout << endl;
     cout << "\n";
+
 
     cout << "Class 1 Nodes: ";
     for (const auto& node : class1) {
-        cout << node << " ";
+        c1[node] = 1;
     }
+    for(int i = 0; i < nNodes; i++)
+    {
+        cout << c1[i] << " ";
+    }
+    cout << endl;
     cout << "\n";
 
     cout << "Class Unlabelled Nodes: ";
     for (const auto& node : classU) {
-        cout << node << " ";
+        cA[node] = 1;
     }
+    for(int i = 0; i < nNodes; i++)
+    {
+        cout << cA[i] << " ";
+    }
+    cout << endl;
     cout << "\n";
 
-    cout << "Original Graph" <<"\n";
-    printGraph(upperTriangularWithDiagonal(readGraph));
+
+
+
+
+    // cout << "Original Graph" <<"\n";
+    // printGraph(upperTriangularWithDiagonal(readGraph));
 
     // vector<unlabelledNodeProperties> unlabellednodeProperties;
     // parallelEdgeComponent(upperTriangularWithDiagonal(readGraph), connectedComponents, class0, class1, unlabellednodeProperties);
@@ -353,53 +378,57 @@ int main() {
     //     cout << "\n";
     // }
 
-    vector<int> readUnlabeledNodesFirst;
-    for (const auto& node : readUnlabeledNodes) {
-        readUnlabeledNodesFirst.push_back(node.first);
-    }
+    // vector<int> readUnlabeledNodesFirst;
+    // for (const auto& node : readUnlabeledNodes) {
+    //     readUnlabeledNodesFirst.push_back(node.first);
+    // }
 
-    vector<unlabelledNodeProperties> unlabellednodeProperties;
+    // vector<unlabelledNodeProperties> unlabellednodeProperties;
 
-    // Call the updated function
-    parallelEdgeUnlabeled(upperTriangularWithDiagonal(readGraph), readUnlabeledNodesFirst, class0, class1, classU, unlabellednodeProperties);
-    vector<pair<int, int>> resultUnlabeledNodes(nNodes);
-    int idx = 0; 
-    // Print the results from main
-    for (int i = 0; i < 10; i++)
-        for ( auto& cp : unlabellednodeProperties) {
+    // // Call the updated function
+    // parallelEdgeUnlabeled(upperTriangularWithDiagonal(readGraph), readUnlabeledNodesFirst, class0, class1, classU, unlabellednodeProperties);
+    // vector<pair<int, int>> resultUnlabeledNodes(nNodes);
+    // int idx = 0; 
+    // // Print the results from main
+    // for (int i = 0; i < 10; i++)
+    //     for ( auto& cp : unlabellednodeProperties) {
             
-            if (cp.total == 0)
-                continue;
+    //         if (cp.total == 0)
+    //             continue;
 
-            float unContribute = 0;
-            for (int u = 0; u < classU.size(); u++)
-            {
-                for ( auto& un : unlabellednodeProperties)
-                {
-                    if (un.node == classU[u])
-                    {
-                        unContribute+= (un.curLabel - cp.curLabel) * 1.0 * upperTriangularWithDiagonal(readGraph)[cp.node][un.node]/cp.total; 
-                    }
-                }
-            }
+    //         float unContribute = 0;
+    //         for (int u = 0; u < classU.size(); u++)
+    //         {
+    //             for ( auto& un : unlabellednodeProperties)
+    //             {
+    //                 if (un.node == classU[u])
+    //                 {
+    //                     unContribute+= (un.curLabel - cp.curLabel) * 1.0 * upperTriangularWithDiagonal(readGraph)[cp.node][un.node]/cp.total; 
+    //                 }
+    //             }
+    //         }
 
-            cp.curLabel = (cp.curLabel + (0 - cp.curLabel)*1.0*cp.class0Sum/cp.total/2 + (1 - cp.curLabel)*1.0*cp.class1Sum/cp.total/2 + unContribute/2);
+    //         cp.curLabel = (cp.curLabel + (0 - cp.curLabel)*1.0*cp.class0Sum/cp.total/2 + (1 - cp.curLabel)*1.0*cp.class1Sum/cp.total/2 + unContribute/2);
             
             
             
-            if (i == 9)
-            {
-                cout << "Node " << cp.node << ": Class 0 Sum = " << cp.class0Sum 
-                << ", Class 1 Sum = " << cp.class1Sum 
-                << ", Total = " << cp.total 
-                << ", Label = " << ((cp.curLabel >= 0.5)? 1 : 0)
-                << "\n";
-                resultUnlabeledNodes[idx] = make_pair(cp.node, (cp.curLabel >= 0.5)? 1 : 0);
-                idx++;
-            }
+    //         if (i == 9)
+    //         {
+    //             cout << "Node " << cp.node << ": Class 0 Sum = " << cp.class0Sum 
+    //             << ", Class 1 Sum = " << cp.class1Sum 
+    //             << ", Total = " << cp.total 
+    //             << ", Label = " << ((cp.curLabel >= 0.5)? 1 : 0)
+    //             << "\n";
+    //             resultUnlabeledNodes[idx] = make_pair(cp.node, (cp.curLabel >= 0.5)? 1 : 0);
+    //             idx++;
+    //         }
             
-        }
+    //     }
         
     
+
+
+
+
     return 0;
 }
