@@ -137,7 +137,7 @@ struct PathCost {
             && (weight1 < other.weight1 || weight2 < other.weight2);
     }
 
-
+};
 // Structure for priority queue (min-heap)
 struct QueueNode {
     int node;
