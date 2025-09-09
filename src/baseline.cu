@@ -5,7 +5,335 @@
 #include <set>
 #include <random>
 #include <type_traits>
+#include <algorithm>
+#include <cuda_runtime.h>
+#include <cublas_v2.h>
+#include <cusolverDn.h>
 using namespace std;
+
+// === Harmonic label propagation helpers (dense, double) ===
+static void checkCudaStatus(cudaError_t status, const char* msg) {
+    if (status != cudaSuccess) {
+        std::cerr << "CUDA error: " << msg << ": " << cudaGetErrorString(status) << std::endl;
+        std::exit(EXIT_FAILURE);
+    }
+}
+
+static void checkCublasStatus(cublasStatus_t status, const char* msg) {
+    if (status != CUBLAS_STATUS_SUCCESS) {
+        std::cerr << "cuBLAS error: " << msg << std::endl;
+        std::exit(EXIT_FAILURE);
+    }
+}
+
+static void checkCusolverStatus(cusolverStatus_t status, const char* msg) {
+    if (status != CUSOLVER_STATUS_SUCCESS) {
+        std::cerr << "cuSOLVER error: " << msg << std::endl;
+        std::exit(EXIT_FAILURE);
+    }
+}
+
+static std::vector<double> generateErdosRenyiAdjacency(int n, double avg_degree, unsigned seed) {
+    std::mt19937 rng(seed);
+    std::uniform_real_distribution<double> wdist(0.0, 1.0);
+    std::uniform_real_distribution<double> udist(0.0, 1.0);
+    std::vector<double> A(n * n, 0.0);
+    if (n <= 1) return A;
+    double p = std::max(0.0, std::min(1.0, avg_degree / static_cast<double>(n - 1)));
+    for (int i = 0; i < n; ++i) {
+        for (int j = i + 1; j < n; ++j) {
+            if (udist(rng) < p) {
+                double w = wdist(rng);
+                A[i * n + j] = w;
+                A[j * n + i] = w;
+            }
+        }
+    }
+    return A;
+}
+
+// Count undirected edges (i<j with positive weight)
+static int countUndirectedEdges(const std::vector<double>& M, int n) {
+    int e = 0;
+    for (int i = 0; i < n; ++i) {
+        for (int j = i + 1; j < n; ++j) if (M[i * n + j] > 0.0) ++e;
+    }
+    return e;
+}
+
+// Generate connected graph: random spanning tree + ER fill to match expected avg degree
+static std::vector<double> generateConnectedAdjacencyWithSpanningTree(int n, double avg_degree, unsigned seed) {
+    std::vector<double> A(n * n, 0.0);
+    if (n <= 1) return A;
+    std::mt19937 rng(seed);
+    std::uniform_real_distribution<double> wdist(0.0, 1.0);
+    std::uniform_int_distribution<int> parentDist;
+
+    // Spanning tree: for v=1..n-1, connect to random parent in [0..v-1]
+    for (int v = 1; v < n; ++v) {
+        parentDist = std::uniform_int_distribution<int>(0, v - 1);
+        int p = parentDist(rng);
+        double w = wdist(rng);
+        A[p * n + v] = w;
+        A[v * n + p] = w;
+    }
+
+    // Add extra edges with probability to reach target expected edges
+    const double target_edges = std::max(0.0, (avg_degree * n) / 2.0);
+    int current_edges = countUndirectedEdges(A, n);
+    const int total_pairs = (n * (n - 1)) / 2;
+    int remaining_pairs = total_pairs - current_edges;
+    double remaining_needed = std::max(0.0, target_edges - static_cast<double>(current_edges));
+    double p_extra = (remaining_pairs > 0) ? std::min(1.0, remaining_needed / static_cast<double>(remaining_pairs)) : 0.0;
+
+    std::uniform_real_distribution<double> udist(0.0, 1.0);
+    for (int i = 0; i < n; ++i) {
+        for (int j = i + 1; j < n; ++j) {
+            if (A[i * n + j] == 0.0 && udist(rng) < p_extra) {
+                double w = wdist(rng);
+                A[i * n + j] = w;
+                A[j * n + i] = w;
+            }
+        }
+    }
+    return A;
+}
+
+static void extendAdjacencyWithNewVertices(std::vector<double>& adjacency, int& num_vertices, int num_new_vertices, double target_avg_degree, unsigned seed, bool ensure_connected) {
+    if (num_new_vertices <= 0) return;
+    int oldN = num_vertices;
+    int newN = num_vertices + num_new_vertices;
+    std::vector<double> B(newN * newN, 0.0);
+    for (int i = 0; i < oldN; ++i) {
+        std::copy_n(&adjacency[i * oldN], oldN, &B[i * newN]);
+    }
+    std::mt19937 rng(seed);
+    std::uniform_real_distribution<double> wdist(0.0, 1.0);
+    std::uniform_real_distribution<double> udist(0.0, 1.0);
+    if (ensure_connected) {
+        // Ensure connectivity by attaching each new vertex to an existing/previous vertex (spanning tree extension)
+        for (int v = oldN; v < newN; ++v) {
+            std::uniform_int_distribution<int> parentDist(0, v - 1);
+            int p = parentDist(rng);
+            double w = wdist(rng);
+            B[p * newN + v] = w;
+            B[v * newN + p] = w;
+        }
+        // Fill extra edges to target expected avg degree
+        int current_edges = countUndirectedEdges(B, newN);
+        const double target_edges = std::max(0.0, (target_avg_degree * newN) / 2.0);
+        const int total_pairs = (newN * (newN - 1)) / 2;
+        int remaining_pairs = total_pairs - current_edges;
+        double remaining_needed = std::max(0.0, target_edges - static_cast<double>(current_edges));
+        double p_extra = (remaining_pairs > 0) ? std::min(1.0, remaining_needed / static_cast<double>(remaining_pairs)) : 0.0;
+        for (int i = 0; i < newN; ++i) {
+            for (int j = i + 1; j < newN; ++j) {
+                if (B[i * newN + j] == 0.0 && udist(rng) < p_extra) {
+                    double w = wdist(rng);
+                    B[i * newN + j] = w;
+                    B[j * newN + i] = w;
+                }
+            }
+        }
+    } else {
+        // Original ER addition respecting expected degree
+        double p = (newN > 1) ? std::max(0.0, std::min(1.0, target_avg_degree / static_cast<double>(newN - 1))) : 0.0;
+        for (int i = 0; i < oldN; ++i) {
+            for (int j = oldN; j < newN; ++j) {
+                if (udist(rng) < p) {
+                    double w = wdist(rng);
+                    B[i * newN + j] = w;
+                    B[j * newN + i] = w;
+                }
+            }
+        }
+        for (int i = oldN; i < newN; ++i) {
+            for (int j = i + 1; j < newN; ++j) {
+                if (udist(rng) < p) {
+                    double w = wdist(rng);
+                    B[i * newN + j] = w;
+                    B[j * newN + i] = w;
+                }
+            }
+        }
+    }
+    adjacency.swap(B);
+    num_vertices = newN;
+}
+
+static std::vector<double> buildGraphLaplacian(const std::vector<double>& adjacency, int num_vertices) {
+    std::vector<double> laplacian(num_vertices * num_vertices, 0.0);
+    for (int i = 0; i < num_vertices; ++i) {
+        double rowSum = 0.0;
+        for (int j = 0; j < num_vertices; ++j) rowSum += adjacency[i * num_vertices + j];
+        for (int j = 0; j < num_vertices; ++j) {
+            if (i == j) laplacian[i * num_vertices + j] = rowSum;
+            else laplacian[i * num_vertices + j] = -adjacency[i * num_vertices + j];
+        }
+    }
+    return laplacian;
+}
+
+static std::vector<double> extractSubmatrix(const std::vector<double>& L, int n, const std::vector<int>& rows, const std::vector<int>& cols) {
+    int r = static_cast<int>(rows.size());
+    int c = static_cast<int>(cols.size());
+    std::vector<double> M(r * c, 0.0);
+    for (int i = 0; i < r; ++i) {
+        for (int j = 0; j < c; ++j) {
+            M[i * c + j] = L[rows[i] * n + cols[j]];
+        }
+    }
+    return M;
+}
+
+// Forward declaration for CUDA kernel launched in solveHarmonicLabels
+__global__ void aggregate_labeled_rhs_kernel(const double* __restrict__ adjacency,
+                                             int num_vertices,
+                                             const int* __restrict__ unlabeled_idx,
+                                             int num_unlabeled,
+                                             const int* __restrict__ labeled_idx,
+                                             const double* __restrict__ labeled_vals,
+                                             int num_labeled,
+                                             double* __restrict__ out_rhs);
+
+static std::vector<double> solveHarmonicLabels(const std::vector<double>& laplacian,
+                                               const std::vector<double>& adjacency,
+                                               int num_vertices,
+                                               const std::vector<int>& labeled_vertex_ids,
+                                               const std::vector<double>& labeled_label_values,
+                                               bool use_agg_kernel) {
+    std::vector<char> is_labeled(num_vertices, 0);
+    for (int idx : labeled_vertex_ids) if (idx >= 0 && idx < num_vertices) is_labeled[idx] = 1;
+    std::vector<int> unlabeled_indices, labeled_indices;
+    for (int i = 0; i < num_vertices; ++i) {
+        if (is_labeled[i]) labeled_indices.push_back(i); else unlabeled_indices.push_back(i);
+    }
+    int num_unlabeled = static_cast<int>(unlabeled_indices.size());
+    int num_labeled = static_cast<int>(labeled_indices.size());
+    if (num_labeled != static_cast<int>(labeled_label_values.size())) {
+        std::cerr << "xl size does not match number of labeled nodes" << std::endl;
+        std::exit(EXIT_FAILURE);
+    }
+    if (num_unlabeled == 0) return {};
+
+    std::vector<double> laplacian_uu = extractSubmatrix(laplacian, num_vertices, unlabeled_indices, unlabeled_indices);
+
+    double *device_luu = nullptr, *device_rhs = nullptr;
+    checkCudaStatus(cudaMalloc((void**)&device_luu, sizeof(double) * num_unlabeled * num_unlabeled), "malloc device_luu");
+    checkCudaStatus(cudaMalloc((void**)&device_rhs, sizeof(double) * num_unlabeled), "malloc device_rhs");
+    checkCudaStatus(cudaMemcpy(device_luu, laplacian_uu.data(), sizeof(double) * num_unlabeled * num_unlabeled, cudaMemcpyHostToDevice), "copy Luu");
+
+    if (use_agg_kernel) {
+        double* device_adjacency = nullptr;
+        int *device_unlabeled_idx = nullptr, *device_labeled_idx = nullptr;
+        double* device_xl = nullptr;
+        checkCudaStatus(cudaMalloc((void**)&device_adjacency, sizeof(double) * num_vertices * num_vertices), "malloc adjacency");
+        checkCudaStatus(cudaMalloc((void**)&device_unlabeled_idx, sizeof(int) * num_unlabeled), "malloc unlabeled_idx");
+        checkCudaStatus(cudaMalloc((void**)&device_labeled_idx, sizeof(int) * num_labeled), "malloc labeled_idx");
+        checkCudaStatus(cudaMalloc((void**)&device_xl, sizeof(double) * num_labeled), "malloc xl");
+        checkCudaStatus(cudaMemcpy(device_adjacency, adjacency.data(), sizeof(double) * num_vertices * num_vertices, cudaMemcpyHostToDevice), "copy adjacency");
+        checkCudaStatus(cudaMemcpy(device_unlabeled_idx, unlabeled_indices.data(), sizeof(int) * num_unlabeled, cudaMemcpyHostToDevice), "copy unlabeled_idx");
+        checkCudaStatus(cudaMemcpy(device_labeled_idx, labeled_indices.data(), sizeof(int) * num_labeled, cudaMemcpyHostToDevice), "copy labeled_idx");
+        checkCudaStatus(cudaMemcpy(device_xl, labeled_label_values.data(), sizeof(double) * num_labeled, cudaMemcpyHostToDevice), "copy xl");
+        dim3 grid(num_unlabeled);
+        dim3 block(256);
+        aggregate_labeled_rhs_kernel<<<grid, block>>>(device_adjacency, num_vertices, device_unlabeled_idx, num_unlabeled,
+                                                      device_labeled_idx, device_xl, num_labeled, device_rhs);
+        checkCudaStatus(cudaDeviceSynchronize(), "aggregate kernel sync");
+        cudaFree(device_adjacency);
+        cudaFree(device_unlabeled_idx);
+        cudaFree(device_labeled_idx);
+        cudaFree(device_xl);
+    } else {
+        std::vector<double> laplacian_ul = extractSubmatrix(laplacian, num_vertices, unlabeled_indices, labeled_indices);
+        double *device_lul = nullptr, *device_xl = nullptr;
+        checkCudaStatus(cudaMalloc((void**)&device_lul, sizeof(double) * num_unlabeled * num_labeled), "malloc device_lul");
+        checkCudaStatus(cudaMalloc((void**)&device_xl, sizeof(double) * num_labeled), "malloc device_xl");
+        checkCudaStatus(cudaMemcpy(device_lul, laplacian_ul.data(), sizeof(double) * num_unlabeled * num_labeled, cudaMemcpyHostToDevice), "copy Lul");
+        checkCudaStatus(cudaMemcpy(device_xl, labeled_label_values.data(), sizeof(double) * num_labeled, cudaMemcpyHostToDevice), "copy xl");
+        cublasHandle_t cublas_handle = nullptr;
+        checkCublasStatus(cublasCreate(&cublas_handle), "create cublas");
+        const double alpha = -1.0, beta = 0.0;
+        checkCublasStatus(cublasDgemv(cublas_handle,
+                                      CUBLAS_OP_T,
+                                      num_labeled,
+                                      num_unlabeled,
+                                      &alpha,
+                                      device_lul,
+                                      num_labeled,
+                                      device_xl,
+                                      1,
+                                      &beta,
+                                      device_rhs,
+                                      1), "gemv b = -Lul*xl");
+        cublasDestroy(cublas_handle);
+        cudaFree(device_lul);
+        cudaFree(device_xl);
+    }
+
+    cusolverDnHandle_t cusolver_handle = nullptr;
+    checkCusolverStatus(cusolverDnCreate(&cusolver_handle), "create cusolver");
+    int lwork = 0, *device_pivots = nullptr, *device_info = nullptr;
+    checkCudaStatus(cudaMalloc((void**)&device_pivots, sizeof(int) * num_unlabeled), "malloc pivots");
+    checkCudaStatus(cudaMalloc((void**)&device_info, sizeof(int)), "malloc info");
+    checkCusolverStatus(cusolverDnDgetrf_bufferSize(cusolver_handle, num_unlabeled, num_unlabeled, device_luu, num_unlabeled, &lwork), "bufferSize");
+    double* device_workspace = nullptr;
+    checkCudaStatus(cudaMalloc((void**)&device_workspace, sizeof(double) * lwork), "malloc workspace");
+    checkCusolverStatus(cusolverDnDgetrf(cusolver_handle, num_unlabeled, num_unlabeled, device_luu, num_unlabeled, device_workspace, device_pivots, device_info), "getrf");
+    checkCusolverStatus(cusolverDnDgetrs(cusolver_handle, CUBLAS_OP_N, num_unlabeled, 1, device_luu, num_unlabeled, device_pivots, device_rhs, num_unlabeled, device_info), "getrs");
+
+    std::vector<double> xu(num_unlabeled, 0.0);
+    checkCudaStatus(cudaMemcpy(xu.data(), device_rhs, sizeof(double) * num_unlabeled, cudaMemcpyDeviceToHost), "copy xu");
+
+    cudaFree(device_luu);
+    cudaFree(device_rhs);
+    cudaFree(device_pivots);
+    cudaFree(device_info);
+    cudaFree(device_workspace);
+    cusolverDnDestroy(cusolver_handle);
+
+    std::vector<double> labels(num_vertices, 0.0);
+    for (int i = 0; i < num_labeled; ++i) labels[labeled_indices[i]] = labeled_label_values[i];
+    for (int i = 0; i < num_unlabeled; ++i) labels[unlabeled_indices[i]] = xu[i];
+    return labels;
+}
+
+static void printVectorDouble(const std::vector<double>& v, const char* name) {
+    std::cout << name << " [" << v.size() << "]:" << std::endl;
+    for (double x : v) std::cout << x << " ";
+    std::cout << std::endl;
+}
+
+// Aggregate labeled influence into RHS for each unlabeled node:
+// b[u_i] = sum_{j in L} adjacency[u_i, labeled_idx[j]] * labeled_vals[j]
+__global__ void aggregate_labeled_rhs_kernel(const double* __restrict__ adjacency,
+                                             int num_vertices,
+                                             const int* __restrict__ unlabeled_idx,
+                                             int num_unlabeled,
+                                             const int* __restrict__ labeled_idx,
+                                             const double* __restrict__ labeled_vals,
+                                             int num_labeled,
+                                             double* __restrict__ out_rhs) {
+    int ui = blockIdx.x;
+    if (ui >= num_unlabeled) return;
+    int u = unlabeled_idx[ui];
+    double sum = 0.0;
+    for (int j = threadIdx.x; j < num_labeled; j += blockDim.x) {
+        int l = labeled_idx[j];
+        sum += adjacency[u * num_vertices + l] * labeled_vals[j];
+    }
+    __shared__ double sdata[256];
+    int tid = threadIdx.x;
+    if (tid < 256) sdata[tid] = 0.0;
+    __syncthreads();
+    if (tid < 256) sdata[tid] = sum;
+    __syncthreads();
+    for (int offset = blockDim.x >> 1; offset > 0; offset >>= 1) {
+        if (tid < offset) sdata[tid] += sdata[tid + offset];
+        __syncthreads();
+    }
+    if (tid == 0) out_rhs[ui] = sdata[0];
+}
 
 template <typename T>
 struct is_vector : std::false_type {};
@@ -221,296 +549,66 @@ void printMatrix(const std::vector<std::vector<int>>& matrix) {
 }
 
 
-int main() {
-    int n = 10, m = 15, r1 = 0, r2 = 50;
-    int total_elements = n * m;
-
-    // Allocate host memory for the main matrix
-    std::vector<std::vector<int>> h_matrix(n, std::vector<int>(m));
-    int* h_flat_matrix = new int[total_elements];
-
-    // Allocate device memory for the main matrix
-    int* d_matrix;
-    cudaMalloc(&d_matrix, total_elements * sizeof(int));
-
-    // Generate the random matrix on the GPU
-    generateRandomMatrix(d_matrix, n, m, r1, r2);
-
-    // Copy the matrix back to host
-    cudaMemcpy(h_flat_matrix, d_matrix, total_elements * sizeof(int), cudaMemcpyDeviceToHost);
-
-    // Convert flat matrix to 2D vector for printing
-    for (int i = 0; i < n; ++i) {
-        for (int j = 0; j < m; ++j) {
-            h_matrix[i][j] = h_flat_matrix[i * m + j];
-        }
+int main(int argc, char** argv) {
+    int num_vertices = 10;
+    int num_labeled = 3;
+    int num_new_vertices = 0;
+    unsigned seed = 1234;
+    double target_avg_degree = 0.0; // 0 -> dense random weights, >0 -> ER with expected degree
+    bool ensure_connected = false;
+    double delta_labeled_pct = 0.1; // fraction of new vertices labeled per delta
+    for (int i = 1; i < argc; ++i) {
+        std::string arg = argv[i];
+        if ((arg == "--num-vertices" || arg == "--n") && i + 1 < argc) num_vertices = std::atoi(argv[++i]);
+        else if ((arg == "--num-labeled" || arg == "--labeled") && i + 1 < argc) num_labeled = std::atoi(argv[++i]);
+        else if ((arg == "--num-new" || arg == "--delta") && i + 1 < argc) num_new_vertices = std::atoi(argv[++i]);
+        else if (arg == "--seed" && i + 1 < argc) seed = static_cast<unsigned>(std::stoul(argv[++i]));
+        else if ((arg == "--avg-degree" || arg == "--avgdeg") && i + 1 < argc) target_avg_degree = std::atof(argv[++i]);
+        else if (arg == "--connected") ensure_connected = true;
+        else if (arg == "--delta-labeled-pct" && i + 1 < argc) delta_labeled_pct = std::atof(argv[++i]);
     }
+    num_labeled = std::max(0, std::min(num_labeled, num_vertices));
 
-    // Print the generated matrix
-    std::cout << "Generated Matrix:" << std::endl;
-    printMatrix(h_matrix);
+    std::vector<double> adjacency = ensure_connected ? generateConnectedAdjacencyWithSpanningTree(num_vertices, target_avg_degree, seed)
+                                                     : generateErdosRenyiAdjacency(num_vertices, target_avg_degree, seed);
+    std::vector<double> laplacian = buildGraphLaplacian(adjacency, num_vertices);
 
-    
+    std::vector<int> labeled_vertex_ids;
+    for (int i = 0; i < num_labeled; ++i) labeled_vertex_ids.push_back(i);
+    std::vector<double> labeled_label_values(num_labeled, 0.0);
+    for (int i = 0; i < num_labeled; ++i) labeled_label_values[i] = (i % 2 == 0) ? 1.0 : 0.0;
 
-    // // Allocate host memory for the result submatrix
-    // std::vector<std::vector<int>> h_result(sub_n1, std::vector<int>(sub_m2));
-    // int* h_flat_result = new int[sub_n1 * sub_m2];
+    std::vector<double> labels_t = solveHarmonicLabels(laplacian, adjacency, num_vertices, labeled_vertex_ids, labeled_label_values, true);
+    std::cout << "labels_t [" << labels_t.size() << "]:" << std::endl;
+    for (double v : labels_t) std::cout << v << " ";
+    std::cout << std::endl;
 
-    // // Allocate device memory for the result submatrix
-    // int* d_result;
-    // cudaMalloc(&d_result, sub_n1 * sub_m2 * sizeof(int));
-
-    // // Perform matrix multiplication on the GPU
-    // parallelMatrixMult(d_submatrix1, d_submatrix2, d_result, sub_n1, sub_m1, sub_m2);
-
-    // // Copy the result submatrix back to host
-    // cudaMemcpy(h_flat_result, d_result, sub_n1 * sub_m2 * sizeof(int), cudaMemcpyDeviceToHost);
-
-    // // Convert flat result submatrix to 2D vector for printing
-    // for (int i = 0; i < sub_n1; ++i) {
-    //     for (int j = 0; j < sub_m2; ++j) {
-    //         h_result[i][j] = h_flat_result[i * sub_m2 + j];
-    //     }
-    // }
-
-    // // Print the result submatrix
-    // std::cout << "Result of Submatrix Multiplication:" << std::endl;
-    // printMatrix(h_result);
-
-    // // Check if the result matrix is invertible
-    // if (isInvertible(d_result, sub_n1)) {
-    //     std::cout << "The result matrix is invertible." << std::endl;
-
-    //     // Allocate device memory for the inverted matrix
-    //     int* d_inv_result;
-    //     cudaMalloc(&d_inv_result, sub_n1 * sub_m2 * sizeof(int));
-
-    //     // Invert the result matrix on the GPU
-    //     invertMatrix(d_result, d_inv_result, sub_n1);
-
-    //     // Allocate host memory for the inverted matrix
-    //     int* h_flat_inv_result = new int[sub_n1 * sub_m2];
-    //     std::vector<std::vector<int>> h_inv_result(sub_n1, std::vector<int>(sub_m2));
-
-    //     // Copy the inverted matrix back to host
-    //     cudaMemcpy(h_flat_inv_result, d_inv_result, sub_n1 * sub_m2 * sizeof(int), cudaMemcpyDeviceToHost);
-
-    //     // Convert flat inverted matrix to 2D vector for printing
-    //     for (int i = 0; i < sub_n1; ++i) {
-    //         for (int j = 0; j < sub_m2; ++j) {
-    //             h_inv_result[i][j] = h_flat_inv_result[i * sub_m2 + j];
-    //         }
-    //     }
-
-    //     // Print the inverted matrix
-    //     std::cout << "Inverted Result Matrix:" << std::endl;
-    //     printMatrix(h_inv_result);
-
-    //     // Free memory for the inverted matrix
-    //     delete[] h_flat_inv_result;
-    //     cudaFree(d_inv_result);
-    // } else {
-    //     std::cout << "The result matrix is not invertible." << std::endl;
-    // }
-
-
-    //std::vector<int> result = getDifference(rows2, n);
-    
-    std::vector<int> randomVector = generateRandomBinaryVector(n);
-
-    std::vector<int> vec = {1, 2, 3, 4, 5};
-    std::vector<std::vector<int>> mat = {
-        {1, 2, 3},
-        {4, 5, 6},
-        {7, 8, 9}
-    };
-    
-    auto vecDim = getDimension(vec);
-    auto matDim = getDimension(mat);
-    
-    auto transposedVec = transpose(vec);
-    auto transposedMat = transpose(mat);
-
-    cout<< "******************************* Testing Done *******************************"<<endl;
-
-    std::vector<int> u = {3, 5, 8};
-    std::vector<int> l = getDifference(u, n);
-
-
-    std::cout << "dim of u :" << getDimension(u).first << " X "<< getDimension(u).second<< endl;
-    std::cout << "dim of l :" << getDimension(l).first << " X "<< getDimension(l).second<< endl;
-    
-
-    // Define the first submatrix row and column indices
-    
-    int sub_n1 = u.size();
-    int sub_m1 = l.size();
-    int sub_total_elements1 = sub_n1 * sub_m1;
-
-    // Allocate host memory for the first submatrix
-    std::vector<std::vector<int>> h_submatrix1(sub_n1, std::vector<int>(sub_m1));
-    int* h_flat_submatrix1 = new int[sub_total_elements1];
-
-    // Allocate device memory for the first submatrix
-    int* d_submatrix1;
-    cudaMalloc(&d_submatrix1, sub_total_elements1 * sizeof(int));
-
-    // Fetch the first submatrix on the GPU
-    fetchSubMatrix(d_matrix, d_submatrix1, u, l, sub_n1, sub_m1, n, m);
-
-    // Copy the first submatrix back to host
-    cudaMemcpy(h_flat_submatrix1, d_submatrix1, sub_total_elements1 * sizeof(int), cudaMemcpyDeviceToHost);
-
-    // Convert flat submatrix to 2D vector for printing
-    for (int i = 0; i < sub_n1; ++i) {
-        for (int j = 0; j < sub_m1; ++j) {
-            h_submatrix1[i][j] = h_flat_submatrix1[i * sub_m1 + j];
-        }
-    }
-
-
-    std::cout << "dim of ul :" << getDimension(h_submatrix1).first << " X "<< getDimension(h_submatrix1).second<< endl;
-
-    int sub_n2 = u.size();
-    int sub_m2 = u.size();
-    int sub_total_elements2 = sub_n2 * sub_m2;
-
-    // Allocate host memory for the first submatrix
-    std::vector<std::vector<int>> h_submatrix2(sub_n2, std::vector<int>(sub_m2));
-    int* h_flat_submatrix2 = new int[sub_total_elements2];
-
-    // Allocate device memory for the first submatrix
-    int* d_submatrix2;
-    cudaMalloc(&d_submatrix2, sub_total_elements2 * sizeof(int));
-
-    // Fetch the first submatrix on the GPU
-    fetchSubMatrix(d_matrix, d_submatrix2, u, u, sub_n2, sub_m2, n, m);
-
-    // Copy the first submatrix back to host
-    cudaMemcpy(h_flat_submatrix2, d_submatrix2, sub_total_elements2 * sizeof(int), cudaMemcpyDeviceToHost);
-
-    // Convert flat submatrix to 2D vector for printing
-    for (int i = 0; i < sub_n2; ++i) {
-        for (int j = 0; j < sub_m2; ++j) {
-            h_submatrix2[i][j] = h_flat_submatrix2[i * sub_m2 + j];
-        }
-    }
-
-
-    std::cout << "dim of uu :" << getDimension(h_submatrix2).first << " X "<< getDimension(h_submatrix2).second<< endl;
-
-    int inv_n2 = getDimension(h_submatrix2).first;
-    int inv_m2 = getDimension(h_submatrix2).second;
-    int* d_inv_submatrix2;
-    std::vector<std::vector<int>> h_inv_submatrix2(inv_n2, std::vector<int>(inv_m2));
-    // // Check if the result matrix is invertible
-    if (isInvertible(d_submatrix2, getDimension(h_submatrix2).first)) {
-        std::cout << "The result matrix is invertible." << std::endl;
-    
-        // Allocate device memory for the inverted matrix
-        
-        cudaMalloc(&d_inv_submatrix2, inv_n2 * inv_m2 * sizeof(int));
-
-        // Invert the result matrix on the GPU
-        invertMatrix(d_submatrix2, d_inv_submatrix2, inv_n2);
-
-        // Allocate host memory for the inverted matrix
-        int* h_flat_inv_submatrix2 = new int[inv_n2 * inv_m2];
-        
-
-        // Copy the inverted matrix back to host
-        cudaMemcpy(h_flat_inv_submatrix2, d_inv_submatrix2, inv_n2 * inv_m2 * sizeof(int), cudaMemcpyDeviceToHost);
-
-        // Convert flat inverted matrix to 2D vector for printing
-        for (int i = 0; i < inv_n2; ++i) {
-            for (int j = 0; j < inv_m2; ++j) {
-                h_inv_submatrix2[i][j] = h_flat_inv_submatrix2[i * inv_m2 + j];
+    if (num_new_vertices > 0) {
+        int prev_num_vertices = num_vertices;
+        extendAdjacencyWithNewVertices(adjacency, num_vertices, num_new_vertices, target_avg_degree, seed + 1, ensure_connected);
+        laplacian = buildGraphLaplacian(adjacency, num_vertices);
+        // Build t+1 labeled set: keep old labeled, plus a fraction of new vertices
+        std::vector<int> labeled_vertex_ids_t1;
+        for (int idx : labeled_vertex_ids) if (idx < num_vertices) labeled_vertex_ids_t1.push_back(idx);
+        std::vector<double> labeled_label_values_t1 = labeled_label_values;
+        int new_count = num_vertices - prev_num_vertices;
+        if (new_count > 0 && delta_labeled_pct > 0.0) {
+            int k_gt = static_cast<int>(delta_labeled_pct * static_cast<double>(new_count) + 0.5);
+            if (k_gt > new_count) k_gt = new_count;
+            // Deterministic selection: first k_gt new vertices; assign balanced 1/0 labels
+            int num_pos = k_gt / 2;
+            int num_zero = k_gt - num_pos;
+            for (int j = 0; j < k_gt; ++j) {
+                int v = prev_num_vertices + j;
+                labeled_vertex_ids_t1.push_back(v);
+                double lbl = (j < num_pos) ? 1.0 : 0.0;
+                labeled_label_values_t1.push_back(lbl);
             }
         }
-
-        // // Print the inverted matrix
-        // std::cout << "Inverted Result Matrix:" << std::endl;
-        // printMatrix(h_inv_submatrix2);
-
-    } else {
-        std::cout << "The result matrix is not invertible." << std::endl;
-    }
-
-    std::cout << "dim of inv_uu :" << getDimension(h_inv_submatrix2).first << " X "<< getDimension(h_inv_submatrix2).second<< endl;
-
-
-    // Allocate host memory for the result submatrix
-    std::vector<std::vector<int>> h_result(sub_n2, std::vector<int>(sub_m1 ));
-    int* h_flat_result = new int[sub_m1 * sub_n2];
-
-    // Allocate device memory for the result submatrix
-    int* d_result;
-    cudaMalloc(&d_result, sub_m1 * sub_n2 * sizeof(int));
-
-    // Perform matrix multiplication on the GPU
-    parallelMatrixMult(d_inv_submatrix2, d_submatrix1, d_result, sub_n2, sub_n1, sub_m1);
-
-    // Copy the result submatrix back to host
-    cudaMemcpy(h_flat_result, d_result, sub_m1 * sub_n2 * sizeof(int), cudaMemcpyDeviceToHost);
-
-    // Convert flat result submatrix to 2D vector for printing
-    for (int i = 0; i < sub_n2; ++i) {
-        for (int j = 0; j < sub_m1; ++j) {
-            h_result[i][j] = h_flat_result[i * sub_m1 + j];
-        }
-    }
-
-    std::cout << "dim of result :" << getDimension(h_result).first << " X "<< getDimension(h_result).second<< endl;
-
-
-    // Allocate host memory for the result submatrix
-    int res_n = getDimension(h_result).first;
-    int res_m = getDimension(h_result).second;
-    int vec_n = getDimension(l).first;
-    int vec_m = getDimension(l).second;
-
-    std::vector<std::vector<int>> h_result2(res_n, std::vector<int>(vec_m ));
-    int* h_flat_result2 = new int[vec_m * res_n];
-
-    // Allocate device memory for the result submatrix
-    int* d_result2;
-    int * d_vec;
-    cudaMalloc(&d_vec, vec_m * vec_n * sizeof(int));
-    cudaMemcpy(d_vec, l.data(), vec_m * vec_n * sizeof(int), cudaMemcpyHostToDevice);
-    cudaMalloc(&d_result2, vec_m * res_n * sizeof(int));
-    
-
-    // Perform matrix multiplication on the GPU
-    parallelMatrixMult(d_result, d_vec, d_result2, res_n, res_m, vec_m);
-
-    // Copy the result submatrix back to host
-    cudaMemcpy(h_flat_result2, d_result2, vec_m * res_n * sizeof(int), cudaMemcpyDeviceToHost);
-
-    // Convert flat result submatrix to 2D vector for printing
-    for (int i = 0; i < res_n; ++i) {
-        for (int j = 0; j < vec_m; ++j) {
-            h_result2[i][j] = h_flat_result2[i * vec_m + j];
-        }
-    }
-
-    std::cout << "dim of final result :" << getDimension(h_result2).first << " X "<< getDimension(h_result2).second<< endl;
-
-    std::cout << "Final result u:" << std::endl;
-    for (const auto& row : h_result2) {
-        for (int val : row) {
-            std::cout << val << " ";
-        }
+        std::vector<double> labels_t_plus_1 = solveHarmonicLabels(laplacian, adjacency, num_vertices, labeled_vertex_ids_t1, labeled_label_values_t1, true);
+        std::cout << "labels_t+1 [" << labels_t_plus_1.size() << "]:" << std::endl;
+        for (double v : labels_t_plus_1) std::cout << v << " ";
         std::cout << std::endl;
     }
-    // // Free memory
-    // delete[] h_flat_matrix;
-    // delete[] h_flat_submatrix1;
-    // delete[] h_flat_submatrix2;
-    // delete[] h_flat_result;
-    // cudaFree(d_matrix);
-    // cudaFree(d_submatrix1);
-    // cudaFree(d_submatrix2);
-    // cudaFree(d_result);
-
     return 0;
 }
